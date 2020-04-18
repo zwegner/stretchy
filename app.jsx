@@ -597,13 +597,15 @@ class Board extends React.Component {
 class PuzzleList extends React.Component {
   render() {
     let records = loadRecords();
+    let vspacer = <div style={{ paddingTop: '10px' }}/>;
     return <div>
         <div>Select a puzzle!</div>
-        <div style={{ paddingTop: '10px' }}/>
+        { vspacer }
         <div>
-            { DIFFICULTIES.map((diff) =>
+            Jump to: { DIFFICULTIES.map((diff) =>
                 <a className='button smallButton' href={ `#${diff}` }>{ diff }</a>) }
         </div>
+        { vspacer }
         <div className="list-holder">
           <table><tbody>
             { PUZZLES.map((pList, diff) =>

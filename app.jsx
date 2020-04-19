@@ -327,7 +327,7 @@ class Board extends React.Component {
         steps = dx;
         attr = 'pos';
         sx = 1;
-        bx = this.state.sizeX + 1;
+        bx = this.state.sizeX;
       } else {
         steps = -dx;
         attr = 'neg';
@@ -341,7 +341,7 @@ class Board extends React.Component {
         steps = dy;
         attr = 'pos';
         sy = 1;
-        by = this.state.sizeY + 1;
+        by = this.state.sizeY;
       } else {
         steps = -dy;
         attr = 'neg';

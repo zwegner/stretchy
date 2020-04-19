@@ -73,6 +73,7 @@ class Piece {
     this.dir = props.dir;
     this.pos = props.pos;
     this.neg = props.neg;
+    this.fake = props.fake;
   }
   serialize() {
     return this;
@@ -116,11 +117,15 @@ class Board extends React.Component {
         x = x|0;
         let c = line[x];
         if (/^[0-9]+$/.test(c))
-          pieces.push(new Piece({len: c|0, x: x, y: y, dir: 0, pos: 0, neg: 0}));
+          pieces.push(new Piece({len: c|0, x: x, y: y, dir: 0, pos: 0, neg: 0, fake: false}));
         else if (c === '.')
           reqs.push(new Req({x: x, y: y}));
       }
     }
+
+    // Add a fake piece for dealing with moves that start on an empty square and
+    // drag over a real piece
+    pieces.push(new Piece({len: 0, x: sizeX, y: sizeY, dir: 0, pos: 0, neg: 0, fake: true}));
 
     let board = this.computeBoard(sizeX, sizeY, pieces);
 
@@ -152,6 +157,7 @@ class Board extends React.Component {
       dragAttr: null,
       dragDir: null,
       hasMoved: null,
+      overlap: null,
     };
   }
 
@@ -163,7 +169,7 @@ class Board extends React.Component {
 
     for (let i in pieces) {
       i = i|0;
-      let {x, y, dir, pos, neg} = pieces[i];
+      let {x, y, dir, pos, neg, fake} = pieces[i];
       let [w, h] = [1, 1];
       if (dir) {
         x -= neg;
@@ -172,6 +178,8 @@ class Board extends React.Component {
         y -= neg;
         h += pos + neg;
       }
+      if (fake)
+        continue;
       for (let yy of range(y, y+h))
         for (let xx of range(x, x+w)) {
           if (board[yy][xx] !== -1)
@@ -190,7 +198,7 @@ class Board extends React.Component {
 
   isWon() {
     for (let p of this.state.pieces)
-      if (p.pos + p.neg + 1 !== p.len)
+      if (!p.fake && p.pos + p.neg + 1 !== p.len)
         return false;
     for (let req of this.state.reqs)
       if (this.state.board[req.y][req.x] === -1)
@@ -267,10 +275,20 @@ class Board extends React.Component {
     if (e.button !== undefined && e.button !== 0)
       return;
     let idx = this.state.board[y][x];
-    if (idx === -1)
-      return;
+    let fake = false;
+    if (idx === -1) {
+      idx = this.state.pieces.length - 1;
+      fake = true;
+    }
 
     let p = new Piece({...this.state.pieces[idx]});
+
+    // Set up the fake piece to start from here if there wasn't a real piece
+    if (fake) {
+      [p.x, p.y] = [x, y];
+      p.dir = 0;
+      p.pos = p.neg = 0;
+    }
 
     let attr = null;
     let dir = null;
@@ -356,13 +374,30 @@ class Board extends React.Component {
       return;
 
     // Extend this side of the piece while it's legal
+    let overlap = null;
     let [x, y] = [dp.x, dp.y];
     let i = 0;
     for (; i < steps; i++) {
       let [x2, y2] = [x + sx, y + sy];
       if (x2 === bx || y2 === by)
         break;
-      if (this.state.board[y2][x2] !== -1 && this.state.board[y2][x2] !== this.state.dragIndex)
+      // Check for fake piece overlaps. This means a fake piece can overlap only one piece,
+      // and it needs to in order to become a valid move.
+      if (dp.fake) {
+        let oi = this.state.board[y2][x2];
+        if (oi !== -1) {
+          let ovp = this.state.pieces[oi];
+          // The fake piece needs to either be in the piece's previous direction or go
+          // through the center
+          if (!(x2 === ovp.x && y2 === ovp.y) && ovp.dir !== dir)
+            break;
+          if (overlap !== null && overlap != oi)
+            break;
+          overlap = oi;
+        }
+      }
+      // No fake piece: just check that the board is empty or the moving piece
+      else if (this.state.board[y2][x2] !== -1 && this.state.board[y2][x2] !== this.state.dragIndex)
         break;
       [x, y] = [x2, y2];
     }
@@ -379,7 +414,7 @@ class Board extends React.Component {
       this.setState({hasMoved: true});
 
     this.state.pieces[this.state.dragIndex] = dp;
-    this.setState({dragX: x, dragY: y, dragPiece: dp});
+    this.setState({dragX: x, dragY: y, dragPiece: dp, overlap: overlap});
     this.regen();
   }
 
@@ -393,20 +428,48 @@ class Board extends React.Component {
 
     let op = this.state.origPiece;
     let dp = this.state.dragPiece;
+    let idx = this.state.dragIndex;
+    let overlap = this.state.overlap;
+
+    // Cancel drag stuff now in case we return early
+    this.setState({dragX: null, dragY: null, dragIndex: null, overlap: null});
 
     // Reset the piece if the center was clicked and not dragged
     let [x, y] = this.getMouseCoords(e);
     if (!this.state.hasMoved && x === dp.x && y === dp.y)
       dp.pos = dp.neg = 0;
 
+    // Check for fake piece overlaps
+    if (dp.fake) {
+      // First, reset the fake piece, since the fake piece is done dragging either way
+      this.state.pieces[this.state.pieces.length - 1] = new Piece({
+        len: 0, x: this.state.sizeX, y: this.state.sizeY, dir: 0, pos: 0, neg: 0, fake: true});
+      this.setState({pieces: this.state.pieces});
+
+      idx = overlap;
+      if (idx === null)
+        return;
+
+      op = this.state.pieces[idx];
+
+      // Recenter the fake piece to derive pos/neg values
+      let coord = dp.dir ? 'x' : 'y';
+      let [c1, c2] = [dp[coord] - dp.neg, dp[coord] + dp.pos];
+      let [neg, pos] = [op[coord] - c1, c2 - op[coord]];
+      if (pos < 0 || neg < 0)
+        return;
+
+      dp.fake = false;
+      dp.len = op.len;
+      [dp.x, dp.y] = [op.x, op.y];
+      [dp.pos, dp.neg] = [pos, neg];
+    }
+
     // Make this move
-    this.doMove(new Move(this.state.dragIndex, op, dp), false);
+    this.doMove(new Move(idx, op, dp), false);
 
     if (this.isWon())
       this.updateRecords();
-
-    // Cancel drag stuff
-    this.setState({dragX: null, dragY: null, dragIndex: null});
   }
 
   componentWillMount() {
@@ -451,6 +514,18 @@ class Board extends React.Component {
       return [x, y];
     }
 
+    const insideFake = (x, y) => {
+      let fp = this.state.pieces[this.state.pieces.length - 1];
+      if (fp.dir) {
+        if (y === fp.y && x >= fp.x - fp.neg && x <= fp.x + fp.pos)
+          return true;
+      } else {
+        if (x === fp.x && y >= fp.y - fp.neg && y <= fp.y + fp.pos)
+          return true;
+      }
+      return false;
+    };
+
     // Grid drawing helper
     const grid = (x1, x2, y1, y2, cls) => 
       range(x1, x2).map((x) =>
@@ -473,14 +548,35 @@ class Board extends React.Component {
 
     // Piece drawing helper
     const pieceElems = (cls) => this.state.pieces.map((p, i) => {
-      let {x, y} = p;
+      // Don't draw the fake piece if it's not active
+      if (p.fake && p.x === this.state.sizeX && p.y === this.state.sizeY)
+        return null;
+
+      let {x, y, len} = p;
       let [w, h] = [1, 1];
-      if (p.dir) {
-        x -= p.neg;
-        w += p.pos + p.neg;
+      let oi = this.state.overlap;
+
+      // Check for an overlapped piece. In that case, draw a 1x1 rectangle if it's not
+      // covering the center
+      if (i === oi) {
+        if (insideFake(x, y))
+          return null;
+        len = 0;
       } else {
-        y -= p.neg;
-        h += p.pos + p.neg;
+        // For fake pieces, we check the length of the overlapped piece, but only if
+        // the fake piece hits the center
+        if (p.fake && oi !== null) {
+          let op = this.state.pieces[oi];
+          if (insideFake(op.x, op.y))
+            len = op.len;
+        }
+        if (p.dir) {
+          x -= p.neg;
+          w += p.pos + p.neg;
+        } else {
+          y -= p.neg;
+          h += p.pos + p.neg;
+        }
       }
 
       let g = null;
@@ -490,7 +586,7 @@ class Board extends React.Component {
         g = grid(x, x+w, y, y+h, 'grid-cover');
 
         // also ugh
-        if (p.pos + p.neg + 1 === p.len)
+        if (p.pos + p.neg + 1 === len)
           c = 'piece-good';
       }
 
@@ -558,6 +654,9 @@ class Board extends React.Component {
 
               { // Piece labels
                 this.state.pieces.map((p) => {
+                  // Don't draw fake piece labels
+                  if (p.fake)
+                    return null;
                   let [x, y] = getCoords(p);
                   let cls = (p.x === this.state.dragX && p.y === this.state.dragY) ?
                     'piece-label label-highlight' : 'piece-label';
@@ -567,8 +666,13 @@ class Board extends React.Component {
               { // Required squares
                 this.state.reqs.map((r) => {
                   let [x, y] = getCoords(r);
-                  let cls = (this.state.board[r.y][r.x] === -1) ? 'req' : 'req-cover';
-                  return <circle className={ cls } cx={ x } cy={ y } />;
+                  let p = this.state.board[r.y][r.x];
+                  let cover = (p !== -1 && p !== this.state.overlap);
+                  // Annoying: manually check if this dot is covered by the fake piece,
+                  // which isn't filled into the board grid
+                  if (!cover)
+                    cover |= insideFake(r.x, r.y);
+                  return <circle className={ cover ? 'req-cover' : 'req' } cx={ x } cy={ y } />;
                 }) }
 
               { grid(0, this.state.sizeX, 0, this.state.sizeY, 'touch') }
